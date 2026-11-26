@@ -60,7 +60,7 @@ UTC = pytz.timezone("UTC")
 # functions for reading, preprocessing, and plotting
 
 
-def read_continuous_h5_file(file):
+def read_continuous_h5_file(file, t_max=None):  # t_max: seconds to read; None = all
     """
     Read continuous DAS data from an HDF5 file in either "Proc" format
     (e.g., the CFR, ZFP, DS, and LF datasets of DASHub) or "OptaSense" format.
@@ -99,18 +99,24 @@ def read_continuous_h5_file(file):
                 zfpComp = False
 
             # Reading DAS data
+            nt_read = None if t_max is None else int(t_max * fs)
             if not zfpComp:
-                DAS_data = fid["Data"][:, :]
+                DAS_data = fid["Data"][:, :nt_read]
             else:
                 DAS_data = decompress(
                     fid["Data"][:],
                     (nCh, nt),
                     np.dtype("float64"),
                     tolerance=fid["Data"].attrs["ZFPtolerance"],
-                ).astype(np.float32)  # the unit is micro-strainrate (1e-6/s)
+                )[:, :nt_read].astype(
+                    np.float32
+                )  # the unit is micro-strainrate (1e-6/s)
+                # ZFP must be decompressed in full (float64); cut to the first
+                # t_max seconds before the float32 cast to lower peak memory
 
             if DAS_data.shape[0] == nt and DAS_data.shape[1] == nCh:
                 DAS_data = DAS_data.T
+            nt = DAS_data.shape[1]  # actual number of samples read
 
             # Reading Time
             begTime = dateutil.parser.parse(fid["Data"].attrs["startTime"])
@@ -626,7 +632,9 @@ for dir_tmp in [CFR_dir, DS_dir, LF_dir, ZFP_dir]:
     print(f"Selected one example {data_type} h5 file: {h5_file_selected}")
 
     # load the data from the h5 file
-    DAS_data, info = read_continuous_h5_file(h5_file_selected)
+    DAS_data, info = read_continuous_h5_file(
+        h5_file_selected, t_max=60
+    )  # read the first 60 seconds of data from this 30-minute file
     print(f"Data shape: {DAS_data.shape}")
     print(info)
     print(f"Plotting the data from {h5_file_selected}...")
@@ -664,8 +672,11 @@ for dir_tmp in [CFR_dir, DS_dir, LF_dir, ZFP_dir]:
     )
     print("\n")
 
+    # free memory before reading the next (possibly large) file
+    del DAS_data
+
 # %% [markdown]
-# # Reading seismic event information and waveforms in the old format (created before DASHub)
+# # Reading seismic event information and waveforms in the DASHub format (Ridgecrest_South)
 
 # %%
 dir_tmp = Events_dir
@@ -677,7 +688,7 @@ print(f"Reading and plotting data in {data_type} directory...")
 event_id = "ci40451695"
 
 # %%
-catalog_file = os.path.join(dir_tmp, "catalog.csv")
+catalog_file = os.path.join(dir_tmp, "events.csv")
 catalog_df = pd.read_csv(catalog_file)
 try:
     event_info = catalog_df[catalog_df["event_id"] == event_id].iloc[0]
@@ -687,7 +698,7 @@ print(f"Selected event {event_id} info from catalog:\n{event_info}")
 
 # %%
 try:
-    h5_file_selected = sorted(glob(os.path.join(dir_tmp, f"data/{event_id}.h5")))[0]
+    h5_file_selected = event_info["detail"]  # full path to the event h5 file
 except:
     # raise error if the file is not found
     raise FileNotFoundError(f"Cannot find h5 file for event {event_id} in {dir_tmp}")
